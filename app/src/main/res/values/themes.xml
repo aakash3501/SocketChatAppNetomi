@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:ns1="http://schemas.android.com/apk/res-auto">
+
+    <style name="Theme.ChatApplication" parent="android:Theme.Material.Light.NoActionBar" >
+    </style>
+</resources>
