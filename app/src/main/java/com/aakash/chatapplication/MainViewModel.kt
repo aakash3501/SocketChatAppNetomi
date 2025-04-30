@@ -1,119 +1,153 @@
 package com.aakash.chatapplication
 
-import android.util.Log
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
-import com.aakash.chatapplication.model.MessageModel
-import com.aakash.chatapplication.model.MessageType
-import com.piesocket.channels.Channel
-import com.piesocket.channels.PieSocket
-import com.piesocket.channels.misc.PieSocketEvent
-import com.piesocket.channels.misc.PieSocketEventListener
-import com.piesocket.channels.misc.PieSocketOptions
+import androidx.lifecycle.viewModelScope
+import com.aakash.chatapplication.domain.OnConnected
+import com.aakash.chatapplication.domain.OnConnectionError
+import com.aakash.chatapplication.domain.OnMessageReceived
+import com.aakash.chatapplication.domain.intent.ChatIntent
+import com.aakash.chatapplication.domain.intent.ConnectToChat
+import com.aakash.chatapplication.domain.intent.SendMessage
+import com.aakash.chatapplication.domain.repository.PieSocketRepository
+import com.aakash.chatapplication.domain.state.ChatScreenState
+import com.aakash.chatapplication.domain.model.MessageModel
+import com.aakash.chatapplication.domain.model.MessageType
+import com.aakash.chatapplication.utils.ConnectionStatus
+import com.aakash.chatapplication.utils.ConnectivityHelper
+import com.aakash.chatapplication.utils.NetworkStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
-class MainViewModel @Inject constructor() : ViewModel() {
-    private var piesocket: PieSocket? = null
-    private var channel: Channel? = null
-    var isConnected by mutableStateOf(false)
-    var conversation = mutableStateListOf<MessageModel>()
-    var sentMessages = mutableStateListOf<String>()
-    var errorMessage by mutableStateOf("")
-    var isConnecting = false
+class MainViewModel @Inject constructor(
+    val pieSocketRepository: PieSocketRepository,
+    val connectivityHelper: ConnectivityHelper
+) :
+    ViewModel() {
+
+    private val _state = MutableStateFlow(ChatScreenState())
+    val state = _state.asStateFlow()
+
+    var sentMessages = mutableListOf<String>()
     val queuedMessages = mutableListOf<String>()
 
-    fun connectToPieSocket() {
-            if (!isConnected && !isConnecting)
-                try {
-                    isConnecting = true
-                    val options = PieSocketOptions().apply {
-                        this.apiKey = "F2UyiSIXco7ejsEcLlRK26wVH6OEWaO8a4LLrhRY"
-                        this.clusterId = "s14509.blr1"
-                    }
-
-                    piesocket = PieSocket(options)
-                    channel = piesocket?.join("default")
-
-
-                    channel?.listen("system:connected", object : PieSocketEventListener() {
-                        override fun handleEvent(event: PieSocketEvent) {
-                            isConnected = true
-                            isConnecting = false
-                            errorMessage = ""
-                            sendQueuedMessages()
-                            Log.d("pie socket connected------", event.toString())
-                        }
-                    })
-
-                    channel?.listen("message", object : PieSocketEventListener() {
-                        override fun handleEvent(event: PieSocketEvent) {
-                            Log.d("pie socket msg received------", event.toString())
-                            if (queuedMessages.contains(event.data)) {
-                                queuedMessages.remove(event.data)
-                                conversation.removeIf { it.message == event.data }
-                                conversation.add(
-                                    MessageModel(
-                                        message = event.data,
-                                        type = MessageType.SENT
-                                    )
-                                )
-                            } else {
-                                conversation.add(
-                                    MessageModel(
-                                        message = event.data,
-                                        type = if (event.data.equals(sentMessages.lastOrNull())) MessageType.SENT else MessageType.RECEIVE
-                                    )
-                                )
-                            }
-                        }
-
-                    })
-
-                    channel?.listen("system:error", object : PieSocketEventListener() {
-                        override fun handleEvent(event: PieSocketEvent) {
-                            isConnected = false
-                            isConnecting = false
-                            errorMessage = "Error: ${event.data?.toString()}"
-                            Log.d("pie socket error------", event.toString())
-                        }
-                    })
-                } catch (e: Exception) {
-                    isConnected = false
-                    isConnecting = false
-                    errorMessage = "Failed to connect: ${e.message}"
-                    e.printStackTrace()
-                }
+    init {
+        listenToNetworkChanges()
     }
 
-    fun sendMessage(message: String) {
-        if(message.isNotBlank()) {
-            if (isConnected) {
-                val event = PieSocketEvent("message").apply {
-                    data = message
-                }
-                channel?.publish(event)
-                sentMessages.add(message)
-            } else {
-                queuedMessages.add(message)
-                conversation.add(
-                    MessageModel(
-                        message = message,
-                        type = MessageType.SENT,
-                        isQueued = true
-                    )
-                )
+    fun handleIntent(intent: ChatIntent) {
+        when (intent) {
+            ConnectToChat -> {
+                connectToChat()
+            }
+
+            is SendMessage -> {
+                val message = intent.msg
+                sendMessage(message)
             }
         }
     }
 
-    fun sendQueuedMessages() {
+    private fun listenToNetworkChanges() {
+        viewModelScope.launch {
+            connectivityHelper.registerForNetworkChange().collect {
+                when (it) {
+                    NetworkStatus.CONNECTED -> {
+                        connectToChat()
+                    }
+
+                    NetworkStatus.DISCONNECTED -> {}
+                }
+            }
+        }
+    }
+
+    private fun sendMessage(message: String) {
+        if (message.isNotBlank()) {
+            if (state.value.connectionStatus == ConnectionStatus.CONNECTED) {
+                pieSocketRepository.sendMessage(message)
+                sentMessages.add(message)
+            } else {
+                queuedMessages.add(message)
+                _state.value =
+                    _state.value.copy(chatList = _state.value.chatList.toMutableList().apply {
+                        add(
+                            MessageModel(
+                                message = message,
+                                type = MessageType.SENT,
+                                isQueued = true
+                            )
+                        )
+                    })
+            }
+        }
+    }
+
+    private fun sendQueuedMessages() {
         for (msg in queuedMessages) {
             sendMessage(msg)
         }
     }
+
+    private fun connectToChat() {
+        viewModelScope.launch {
+            if (state.value.connectionStatus == ConnectionStatus.NOT_INITIATED) {
+                _state.value = _state.value.copy(connectionStatus = ConnectionStatus.CONNECTING)
+                pieSocketRepository.connectToSocket().collect { response ->
+                    when (response) {
+                        OnConnected -> {
+                            _state.value = _state.value.copy(
+                                connectionStatus = ConnectionStatus.CONNECTED,
+                                errorMessage = ""
+                            )
+                            sendQueuedMessages()
+                        }
+
+                        is OnConnectionError -> {
+                            _state.value = _state.value.copy(
+                                connectionStatus = ConnectionStatus.DISCONNECTED,
+                                errorMessage = response.error
+                            )
+                        }
+
+                        is OnMessageReceived -> {
+                            if (queuedMessages.contains(response.msg)) {
+                                queuedMessages.remove(response.msg)
+                                _state.value =
+                                    _state.value.copy(
+                                        chatList = _state.value.chatList.toMutableList().apply {
+                                            removeIf { it.message == response.msg }
+                                            add(
+                                                MessageModel(
+                                                    message = response.msg,
+                                                    type = MessageType.SENT
+                                                )
+                                            )
+                                        })
+                            } else {
+                                _state.value =
+                                    _state.value.copy(
+                                        chatList = _state.value.chatList.toMutableList().apply {
+                                            add(
+                                                MessageModel(
+                                                    message = response.msg,
+                                                    type = if (response.msg == sentMessages.lastOrNull()) MessageType.SENT else MessageType.RECEIVE
+                                                )
+                                            )
+                                        })
+                            }
+                        }
+                    }
+
+                }
+            } else if (state.value.connectionStatus == ConnectionStatus.DISCONNECTED) {
+                _state.value = _state.value.copy(connectionStatus = ConnectionStatus.CONNECTING)
+                pieSocketRepository.reconnect()
+            }
+        }
+    }
 }
+

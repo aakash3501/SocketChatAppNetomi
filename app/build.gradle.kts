@@ -10,6 +10,10 @@ android {
     namespace = "com.aakash.chatapplication"
     compileSdk = 35
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.aakash.chatapplication"
         minSdk = 27
@@ -21,12 +25,20 @@ android {
     }
 
     buildTypes {
+        debug {
+            isMinifyEnabled = false
+            buildConfigField( "String", "PIE_SOCKET_API_KEY", "\"F2UyiSIXco7ejsEcLlRK26wVH6OEWaO8a4LLrhRY\"")
+            buildConfigField( "String", "PIE_SOCKET_CLUSTER_ID", "\"s14509.blr1\"")
+        }
+
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField( "String", "PIE_SOCKET_API_KEY", "\"F2UyiSIXco7ejsEcLlRK26wVH6OEWaO8a4LLrhRY\"")
+            buildConfigField( "String", "PIE_SOCKET_CLUSTER_ID", "\"s14509.blr1\"")
         }
     }
     compileOptions {
@@ -60,6 +72,9 @@ dependencies {
 
 
     testImplementation(libs.junit)
+    testImplementation(libs.mockk)
+    testImplementation (libs.kotlinx.coroutines.test)
+
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

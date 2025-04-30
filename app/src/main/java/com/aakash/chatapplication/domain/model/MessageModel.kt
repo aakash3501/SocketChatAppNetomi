@@ -1,4 +1,4 @@
-package com.aakash.chatapplication.model
+package com.aakash.chatapplication.domain.model
 
 data class MessageModel(
     val message: String,
